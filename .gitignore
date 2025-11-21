@@ -1,0 +1,34 @@
+﻿# Node modules (both root and frontend)
+node_modules/
+
+# Environment variables and secrets
+.env
+
+# Build outputs
+dist/
+build/
+
+# Dependency lock files if unwanted
+package-lock.json
+yarn.lock
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+
+# IDE / editor folders
+.vscode/
+.idea/
+
+# Misc cache
+*.cache
+*.tmp
+
+# TypeScript build artifacts
+*.tsbuildinfo
