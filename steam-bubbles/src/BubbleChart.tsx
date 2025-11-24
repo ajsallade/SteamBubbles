@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import * as d3 from "d3";
 
 export type GameViz = {
@@ -7,6 +7,7 @@ export type GameViz = {
   hours: number;
   img: string;
   storeUrl: string;
+  manual?: boolean;
 };
 
 type Props = {
@@ -15,6 +16,7 @@ type Props = {
   layoutMode: "packed" | "scatter";
   shuffleSeed: number;
   showHoursLabels: boolean;
+  showManualMarkers?: boolean; // NEW
   onToggleHide: (appid: number) => void;
 };
 
@@ -63,6 +65,7 @@ export default function BubbleChart({
   layoutMode,
   shuffleSeed,
   showHoursLabels,
+  showManualMarkers = false,
   onToggleHide,
 }: Props) {
   const width = 950;
@@ -76,14 +79,15 @@ export default function BubbleChart({
   const [hovered, setHovered] = useState<GameViz | null>(null);
   const q = searchTerm.trim().toLowerCase();
 
-  // remember scatter positions across renders so they don't reshuffle
+  // attempt to prevent reshuffle
+  // not sure if actually doing anything
   const scatterPosRef = useRef<Map<number, { x: number; y: number }>>(
     new Map()
   );
-  // track last max radius so we can reset when sizes jump
+  
   const scatterMaxRRef = useRef<number | null>(null);
 
-  /* ---------------- PAN / ZOOM STATE ---------------- */
+  // pan & zoom
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [userZoom, setUserZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -153,14 +157,14 @@ export default function BubbleChart({
     setPan({ x: 0, y: 0 });
   };
 
-  /* ---------------- SIZE ---------------- */
+  //size
   const sized: SizedGame[] = useMemo(() => {
     const values = games.map((g) =>
       Number.isFinite(g.hours) && g.hours > 0 ? g.hours : 0
     );
     const maxValue = d3.max(values) ?? 1;
 
-    // keep your .15 — do not change this
+    // for whatever reason .15 fixed collisions
     const maxR = Math.min(width, height) * 0.15;
 
     const rScale = d3
@@ -178,7 +182,7 @@ export default function BubbleChart({
     });
   }, [games, width, height]);
 
-  /* ---------------- PACKED ---------------- */
+  //packed
   const packedLayout = useMemo(() => {
     if (layoutMode !== "packed") return [] as LeafNode[];
 
@@ -204,7 +208,7 @@ export default function BubbleChart({
     }));
   }, [layoutMode, sized, width, height, outerPad]);
 
-  /* ---------------- SCATTER / BLOB (light + stable) ---------------- */
+  // scatter / blob
   const scatterLayout = useMemo(() => {
     if (layoutMode !== "scatter") return [] as LeafNode[];
 
@@ -215,38 +219,51 @@ export default function BubbleChart({
       prevMaxR != null && Math.abs(maxRNow - prevMaxR) / prevMaxR > 0.2;
 
     let prev = scatterPosRef.current;
-    if (significantRadiusChange) prev = new Map(); // full reset
+    if (significantRadiusChange) prev = new Map(); 
 
-    const nodes: ScatterNode[] = sized.map((d) => {
+    const n = sized.length;
+    const blobRadius = Math.min(width, height) * 0.32;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5)); 
+
+    const nodes: ScatterNode[] = sized.map((d, i) => {
       const old = prev.get(d.appid);
       const rng = rngForApp(d.appid, shuffleSeed);
 
-      // when reset, start near center blob with jitter
-      const startX =
-        old?.x ??
-        cx + (rng() - 0.5) * width * 0.35 + (rng() - 0.5) * 30;
-      const startY =
-        old?.y ??
-        cy + (rng() - 0.5) * height * 0.35 + (rng() - 0.5) * 30;
+      // bias targets
+      const t = n <= 1 ? 0 : i / (n - 1);
+      const angle = i * goldenAngle;
+      const spiralR = blobRadius * Math.sqrt(t);
 
-      const tx = cx + (rng() - 0.5) * width * 0.32;
-      const ty = cy + (rng() - 0.5) * height * 0.32;
+      const tx =
+        cx +
+        Math.cos(angle) * spiralR +
+        (rng() - 0.5) * width * 0.06;
+      const ty =
+        cy +
+        Math.sin(angle) * spiralR +
+        (rng() - 0.5) * height * 0.06;
+
+      // start positions
+      const startX =
+        old?.x ?? tx + (rng() - 0.5) * width * 0.18 + (rng() - 0.5) * 30;
+      const startY =
+        old?.y ?? ty + (rng() - 0.5) * height * 0.18 + (rng() - 0.5) * 30;
 
       return { ...d, x: startX, y: startY, tx, ty };
     });
 
-    const n = nodes.length;
     const pad = 0.9;
 
     const runTicks = (sim: d3.Simulation<any, any>, ticks: number) => {
       for (let i = 0; i < ticks; i++) sim.tick();
     };
 
-    // scale tick counts by number of bubbles (avoid freezing)
+    // scale tick counts by number of bubbles
+    // for freezes hopefuuly
     const t1 = clamp(180 + n * 1.5, 220, 520);
     const t2 = clamp(240 + n * 2.0, 320, 720);
 
-    // Phase 1: blob pull + collide
+    // pull to center and collide
     const sim1 = d3
       .forceSimulation(nodes as any)
       .alpha(1)
@@ -262,7 +279,7 @@ export default function BubbleChart({
 
     runTicks(sim1, t1);
 
-    // Phase 2: stronger collide to finish edge-to-edge
+    // stronger collide
     const sim2 = d3
       .forceSimulation(nodes as any)
       .alpha(0.9)
@@ -291,7 +308,7 @@ export default function BubbleChart({
       );
     });
 
-    // tiny cleanup only for smaller N (skip costly scans for huge libs)
+    // tiny cleanup only for smaller N 
     if (n <= 140) {
       let overlaps = 0;
       for (let i = 0; i < n; i++) {
@@ -343,7 +360,7 @@ export default function BubbleChart({
   const layoutLeaves =
     layoutMode === "packed" ? packedLayout : scatterLayout;
 
-  /* ---------------- SMOOTH TRANSITIONS ---------------- */
+  //smooth transitions hopefully
   const prevPosRef = useRef<
     Map<number, { x: number; y: number; r: number }>
   >(new Map());
@@ -460,6 +477,19 @@ export default function BubbleChart({
                     >
                       {g.hours.toFixed(1)}h
                     </text>
+                  )}
+
+                  {/* NEW: manual marker */}
+                  {showManualMarkers && g.manual && (
+                    <circle
+                      cx={l.r * 0.62}
+                      cy={-l.r * 0.62}
+                      r={Math.max(2.5, l.r * 0.12)}
+                      fill="#ffd166"
+                      stroke="rgba(0,0,0,0.7)"
+                      strokeWidth={1}
+                      style={{ pointerEvents: "none" }}
+                    />
                   )}
                 </g>
               );

@@ -9,7 +9,7 @@ const SteamStrategy = SteamStrategyPkg.Strategy;
 
 const app = express();
 
-/* ------------------------- ENV + FALLBACKS ------------------------- */
+//env
 const BACKEND_URL =
   process.env.BACKEND_URL || "https://steambubbles.onrender.com";
 
@@ -30,14 +30,7 @@ const STEAM_REALM =
 
 const isProd = process.env.NODE_ENV === "production";
 
-console.log("NODE_ENV         =", process.env.NODE_ENV);
-console.log("BACKEND_URL      =", BACKEND_URL);
-console.log("FRONTEND_URL     =", FRONTEND_URL);
-console.log("CLIENT_ORIGIN    =", CLIENT_ORIGIN);
-console.log("STEAM_REALM      =", STEAM_REALM);
-console.log("STEAM_RETURN_URL =", STEAM_RETURN_URL);
-
-/* ------------------------- MIDDLEWARE ------------------------- */
+//middleware
 app.set("trust proxy", 1);
 
 app.use(
@@ -64,7 +57,7 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-/* ------------------------- PASSPORT STEAM ------------------------- */
+//steam
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
@@ -86,9 +79,30 @@ passport.use(
   )
 );
 
-/* ------------------------- HELPERS ------------------------- */
+//helpers
 function isSteamId64(x) {
   return typeof x === "string" && /^[0-9]{17}$/.test(x);
+}
+
+// links
+function normalizeSteamInput(input) {
+  if (!input || typeof input !== "string") return input;
+  const s = input.trim();
+
+  try {
+    const u = new URL(s);
+    if (u.hostname.includes("steamcommunity.com")) {
+      const parts = u.pathname.split("/").filter(Boolean);
+      // https://steamcommunity.com/profiles/<steamid64>/
+      if (parts[0] === "profiles" && parts[1]) return parts[1];
+      // https://steamcommunity.com/id/<vanityname>/
+      if (parts[0] === "id" && parts[1]) return parts[1];
+    }
+  } catch {
+    
+  }
+
+  return s.replace(/\/+$/, "");
 }
 
 async function resolveVanityToSteamId(vanity) {
@@ -103,7 +117,7 @@ async function resolveVanityToSteamId(vanity) {
   return null;
 }
 
-/* ------------------------- BASIC ROUTES ------------------------- */
+//basic
 app.get("/", (req, res) => {
   res.send("SteamBubbles backend is running. Try /api/me or /api/owned-games");
 });
@@ -112,7 +126,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-/* ------------------------- AUTH ROUTES ------------------------- */
+//auth
 app.get("/auth/steam", passport.authenticate("steam"));
 
 app.get(
@@ -127,15 +141,14 @@ app.get("/auth/logout", (req, res) => {
   });
 });
 
-/* ------------------------- API ROUTES ------------------------- */
+//Api
 
-// Who am I?
 app.get("/api/me", (req, res) => {
   if (!req.user) return res.json({ loggedIn: false });
   res.json({ loggedIn: true, user: req.user });
 });
 
-// Get games for logged-in OR manual steamid (?steamid=...)
+// Manual input
 app.get("/api/owned-games", async (req, res) => {
   try {
     let steamid =
@@ -147,7 +160,9 @@ app.get("/api/owned-games", async (req, res) => {
       return res.status(400).json({ error: "No steamid provided." });
     }
 
-    // Vanity name support
+    steamid = normalizeSteamInput(steamid);
+
+    
     if (!isSteamId64(steamid)) {
       const resolved = await resolveVanityToSteamId(steamid);
       if (!resolved) {
@@ -158,7 +173,7 @@ app.get("/api/owned-games", async (req, res) => {
       steamid = resolved;
     }
 
-    // store manual ID so refreshes work without retyping
+    
     if (req.query.steamid) {
       req.session.manualSteamId = steamid;
     }
@@ -180,7 +195,7 @@ app.get("/api/owned-games", async (req, res) => {
   }
 });
 
-// Batch app details (genres, name, etc.)
+
 app.post("/api/appdetails-batch", async (req, res) => {
   try {
     const appids = req.body?.appids;
@@ -220,6 +235,6 @@ app.post("/api/appdetails-batch", async (req, res) => {
   }
 });
 
-/* ------------------------- START SERVER ------------------------- */
+//start server
 const PORT = process.env.PORT || 5174;
 app.listen(PORT, () => console.log("API on port", PORT));
