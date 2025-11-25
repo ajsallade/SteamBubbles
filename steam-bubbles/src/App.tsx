@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import BubbleChart from "./BubbleChart";
 import type { GameViz } from "./BubbleChart";
+import Loader from "./Loader";
+import { useDebounce } from "@uidotdev/usehooks";
 
-const BACKEND =
-  import.meta.env.VITE_BACKEND_URL || "http://localhost:5174";
+const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:5174";
 
 type MergeMap = Record<number, number>;
 type ManualGame = {
@@ -12,7 +13,6 @@ type ManualGame = {
   name?: string;
   img?: string;
 };
-
 
 // Accept SteamID64, vanity, or steamcommunity link
 function normalizeSteamInput(input: string) {
@@ -40,18 +40,20 @@ export default function App() {
   const [games, setGames] = useState<GameViz[]>([]);
   const [error, setError] = useState("");
 
-  const [topNInput, setTopNInput] = useState<number>(100);
-  const [topN, setTopN] = useState<number>(100);
+  const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("");
 
-  const [showAll, setShowAll] = useState<boolean>(false);
+  const [topNInput, setTopNInput] = useState<number>(100);
+  const topN = useDebounce(topNInput, 500);
+
+  const [showAllRaw, setShowAllRaw] = useState<boolean>(false);
+  const showAll = useDebounce(showAllRaw, 100);
   const [searchTerm, setSearchTerm] = useState<string>("");
 
-  const [layoutMode, setLayoutMode] =
-    useState<"packed" | "scatter">("scatter");
+  const [layoutMode, setLayoutMode] = useState<"packed" | "scatter">("scatter");
 
   const [shuffleSeed, setShuffleSeed] = useState(0);
   const [showHoursLabels, setShowHoursLabels] = useState(false);
-
 
   // manual input
   const [steamIdInput, setSteamIdInput] = useState(() => {
@@ -76,7 +78,9 @@ export default function App() {
     }
   });
 
-  const [selectedHiddenAppid, setSelectedHiddenAppid] = useState<number | "">("");
+  const [selectedHiddenAppid, setSelectedHiddenAppid] = useState<number | "">(
+    ""
+  );
 
   // Merge map persisted in localStorage
   const [mergeMap, setMergeMap] = useState<MergeMap>(() => {
@@ -129,7 +133,7 @@ export default function App() {
   }, [manualGames]);
 
   function toggleHide(appid: number) {
-    setHiddenAppids(prev => {
+    setHiddenAppids((prev) => {
       const next = new Set(prev);
       if (next.has(appid)) next.delete(appid);
       else next.add(appid);
@@ -157,20 +161,20 @@ export default function App() {
 
     const rootTo = findMergeRoot(mergeTo, {
       ...mergeMap,
-      [mergeFrom]: mergeTo
+      [mergeFrom]: mergeTo,
     });
     if (rootTo === mergeFrom) {
       setError("That merge would create a loop.");
       return;
     }
 
-    setMergeMap(prev => ({ ...prev, [mergeFrom]: mergeTo }));
+    setMergeMap((prev) => ({ ...prev, [mergeFrom]: mergeTo }));
     setMergeFrom("");
     setMergeTo("");
   }
 
   function removeMerge(fromAppid: number) {
-    setMergeMap(prev => {
+    setMergeMap((prev) => {
       const next = { ...prev };
       delete next[fromAppid];
       return next;
@@ -204,7 +208,7 @@ export default function App() {
       const r = await fetch(`${BACKEND}/api/appdetails-batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ appids: [appid] })
+        body: JSON.stringify({ appids: [appid] }),
       });
       const j = await r.json();
       const d = j?.[appid];
@@ -214,9 +218,9 @@ export default function App() {
       // ignore
     }
 
-    setManualGames(prev => {
+    setManualGames((prev) => {
       const next = [...prev];
-      const idx = next.findIndex(m => m.appid === appid);
+      const idx = next.findIndex((m) => m.appid === appid);
       if (idx >= 0) next[idx] = { appid, hours, name, img };
       else next.push({ appid, hours, name, img });
       return next;
@@ -227,7 +231,7 @@ export default function App() {
   }
 
   function removeManualGame(appid: number) {
-    setManualGames(prev => prev.filter(m => m.appid !== appid));
+    setManualGames((prev) => prev.filter((m) => m.appid !== appid));
   }
 
   function clearManualGames() {
@@ -235,13 +239,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    const id = setTimeout(() => setTopN(topNInput), 120);
-    return () => clearTimeout(id);
-  }, [topNInput]);
-
-  useEffect(() => {
     fetch(`${BACKEND}/api/me`, { credentials: "include" })
-      .then(r => r.json())
+      .then((r) => r.json())
       .then(setMe)
       .catch(() => setMe({ loggedIn: false }));
   }, []);
@@ -252,21 +251,22 @@ export default function App() {
     setGames([]);
 
     const r = await fetch(`${BACKEND}/api/owned-games`, {
-      credentials: "include"
+      credentials: "include",
     });
     const data = await r.json();
 
     const list = data?.response?.games ?? [];
     if (!list.length) {
-      setError(
-        "No games returned. Steam 'Game Details' must be Public."
-      );
+      setError("No games returned. Steam 'Game Details' must be Public.");
       return;
     }
     setRawGames(list);
   }
 
   async function loadGamesById() {
+    setLoading(true);
+    console.log("Loading games by ID...");
+    setLoadingMessage("Loading games...");
     const normalized = normalizeSteamInput(steamIdInput);
     if (!normalized) return;
 
@@ -308,89 +308,100 @@ export default function App() {
 
   useEffect(() => {
     if (!rawGames.length && manualGames.length === 0) return;
-
     // owned games
-    const owned: GameViz[] = rawGames
-      .filter(g => g && g.appid && g.name)
-      .map(g => {
-        const minutes = Number(g.playtime_forever ?? 0);
-        const hoursRaw = Number.isFinite(minutes) ? minutes / 60 : 0;
-        const hours =
-          Number.isFinite(hoursRaw) && hoursRaw >= 0 ? hoursRaw : 0;
 
-        return {
-          appid: g.appid,
-          name: g.name,
-          hours,
-          img: `https://cdn.akamai.steamstatic.com/steam/apps/${g.appid}/header.jpg`,
-          storeUrl: `https://store.steampowered.com/app/${g.appid}/`,
-          manual: false
-        };
-      });
+    setLoading(true);
+    console.log("Processing games... (useEffect)");
+    setLoadingMessage("Processing games...");
 
-    // manual games (can overlap appids, merge later)
-    const manualList: GameViz[] = manualGames.map(m => ({
-      appid: m.appid,
-      name: m.name || `App ${m.appid}`,
-      hours: m.hours,
-      img: m.img || `https://cdn.akamai.steamstatic.com/steam/apps/${m.appid}/header.jpg`,
-      storeUrl: `https://store.steampowered.com/app/${m.appid}/`,
-      manual: true
-    }));
+    setTimeout(() => {
+      const owned: GameViz[] = rawGames
+        .filter((g) => g && g.appid && g.name)
+        .map((g) => {
+          const minutes = Number(g.playtime_forever ?? 0);
+          const hoursRaw = Number.isFinite(minutes) ? minutes / 60 : 0;
+          const hours =
+            Number.isFinite(hoursRaw) && hoursRaw >= 0 ? hoursRaw : 0;
 
-    const base = [...owned, ...manualList];
-    setUnmergedGames(base);
-
-  
-    const metaLookup = new Map<number, GameViz>();
-    for (const g of base) {
-      if (!metaLookup.has(g.appid)) metaLookup.set(g.appid, g);
-      else {
-        const cur = metaLookup.get(g.appid)!;
-        if (cur.manual && !g.manual) metaLookup.set(g.appid, g);
-      }
-    }
-
-    // apply merges & also combine duplicate appids
-    const merged = new Map<number, GameViz>();
-
-    for (const g of base) {
-      const root = findMergeRoot(g.appid, mergeMap);
-      const meta = metaLookup.get(root) || g;
-
-      const existing = merged.get(root);
-      if (existing) {
-        existing.hours += g.hours;
-        existing.manual = existing.manual || g.manual;
-      } else {
-        merged.set(root, {
-          ...meta,
-          hours: g.hours,
-          manual: g.manual
+          return {
+            appid: g.appid,
+            name: g.name,
+            hours,
+            img: `https://cdn.akamai.steamstatic.com/steam/apps/${g.appid}/header.jpg`,
+            storeUrl: `https://store.steampowered.com/app/${g.appid}/`,
+            manual: false,
+          };
         });
-      }
-    }
 
-    setGames([...merged.values()]);
+      // manual games (can overlap appids, merge later)
+      const manualList: GameViz[] = manualGames.map((m) => ({
+        appid: m.appid,
+        name: m.name || `App ${m.appid}`,
+        hours: m.hours,
+        img:
+          m.img ||
+          `https://cdn.akamai.steamstatic.com/steam/apps/${m.appid}/header.jpg`,
+        storeUrl: `https://store.steampowered.com/app/${m.appid}/`,
+        manual: true,
+      }));
+
+      const base = [...owned, ...manualList];
+      setUnmergedGames(base);
+
+      const metaLookup = new Map<number, GameViz>();
+      for (const g of base) {
+        if (!metaLookup.has(g.appid)) metaLookup.set(g.appid, g);
+        else {
+          const cur = metaLookup.get(g.appid)!;
+          if (cur.manual && !g.manual) metaLookup.set(g.appid, g);
+        }
+      }
+
+      // apply merges & also combine duplicate appids
+      const merged = new Map<number, GameViz>();
+
+      for (const g of base) {
+        const root = findMergeRoot(g.appid, mergeMap);
+        const meta = metaLookup.get(root) || g;
+
+        const existing = merged.get(root);
+        if (existing) {
+          existing.hours += g.hours;
+          existing.manual = existing.manual || g.manual;
+        } else {
+          merged.set(root, {
+            ...meta,
+            hours: g.hours,
+            manual: g.manual,
+          });
+        }
+      }
+
+      setLoading(false);
+      setLoadingMessage("");
+      setGames([...merged.values()]);
+    }, 1000);
   }, [rawGames, manualGames, mergeMap]);
 
   const hiddenGamesList = useMemo(
-    () => games.filter(g => hiddenAppids.has(g.appid)),
+    () => games.filter((g) => hiddenAppids.has(g.appid)),
     [games, hiddenAppids]
   );
 
   const visibleGames = useMemo(
-    () => games.filter(g => !hiddenAppids.has(g.appid)),
+    () => games.filter((g) => !hiddenAppids.has(g.appid)),
     [games, hiddenAppids]
   );
 
   // selection stays "top by hours" like now
   const selection = useMemo(() => {
+    if (visibleGames.length === 0) return [];
+    setLoading(true);
+    setLoadingMessage("Processing games...");
     const sorted = [...visibleGames].sort((a, b) => b.hours - a.hours);
     if (showAll) return sorted;
     return sorted.slice(0, Math.max(5, topN));
   }, [visibleGames, topN, showAll]);
-
 
   function downloadSvg() {
     const svg = document.querySelector("svg");
@@ -419,26 +430,28 @@ export default function App() {
         background: "#0b0f14",
         height: "100vh",
         display: "flex",
-        flexDirection: "column"
-      }}
-    >
+        flexDirection: "column",
+      }}>
       <div style={{ padding: 16 }}>
         <h1 style={{ marginBottom: 8 }}>Steam Bubbles</h1>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            marginBottom: 6,
+          }}>
           {!me?.loggedIn ? (
             <a href={`${BACKEND}/auth/steam`}>
-              <button style={{ padding: 10 }}>
-                Sign in with Steam
-              </button>
+              <button style={{ padding: 10 }}>Sign in with Steam</button>
             </a>
           ) : (
             <div>
               Logged in as: <b>{me.user.displayName}</b>
               <button
                 onClick={loadMyGames}
-                style={{ marginLeft: 10, padding: 8 }}
-              >
+                style={{ marginLeft: 10, padding: 8 }}>
                 Load my games
               </button>
             </div>
@@ -446,7 +459,14 @@ export default function App() {
 
           <div style={{ opacity: 0.7, fontWeight: 700 }}>OR</div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <form
+            style={{ display: "flex", alignItems: "center", gap: 8 }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (steamIdInput.trim() && !manualLoading) {
+                loadGamesById();
+              }
+            }}>
             <input
               placeholder="SteamID64, vanity, or Steam link"
               value={steamIdInput}
@@ -457,21 +477,21 @@ export default function App() {
                 borderRadius: 6,
                 border: "1px solid #2a475e",
                 background: "#0b0f14",
-                color: "white"
+                color: "white",
               }}
             />
             <button
-              onClick={loadGamesById}
+              type="submit"
               disabled={!steamIdInput.trim() || manualLoading}
-              style={{ padding: "8px 12px" }}
-            >
+              style={{ padding: "8px 12px" }}>
               {manualLoading ? "Loading..." : "Load by ID"}
             </button>
-          </div>
+          </form>
         </div>
 
         <div style={{ opacity: 0.6, fontSize: 12, marginBottom: 12 }}>
-          Manual ID works only if the user's Steam "Game Details" privacy is public.
+          Manual ID works only if the user's Steam "Game Details" privacy is
+          public.
         </div>
 
         {/* Merge UI */}
@@ -486,17 +506,16 @@ export default function App() {
               padding: 10,
               background: "#111820",
               border: "1px solid #233447",
-              borderRadius: 10
-            }}
-          >
-            <div style={{ fontWeight: 700, marginRight: 6 }}>
-              Merge games:
-            </div>
+              borderRadius: 10,
+            }}>
+            <div style={{ fontWeight: 700, marginRight: 6 }}>Merge games:</div>
 
             <select
               value={mergeFrom}
               onChange={(e) =>
-                setMergeFrom(e.target.value === "" ? "" : Number(e.target.value))
+                setMergeFrom(
+                  e.target.value === "" ? "" : Number(e.target.value)
+                )
               }
               style={{
                 padding: 6,
@@ -504,11 +523,10 @@ export default function App() {
                 border: "1px solid #2a475e",
                 background: "#0b0f14",
                 color: "white",
-                minWidth: 220
-              }}
-            >
+                minWidth: 220,
+              }}>
               <option value="">From (playtest)</option>
-              {allForMerge.map(g => (
+              {allForMerge.map((g) => (
                 <option key={g.appid} value={g.appid}>
                   {g.name}
                 </option>
@@ -526,13 +544,12 @@ export default function App() {
                 border: "1px solid #2a475e",
                 background: "#0b0f14",
                 color: "white",
-                minWidth: 220
-              }}
-            >
+                minWidth: 220,
+              }}>
               <option value="">Into (full game)</option>
               {allForMerge
-                .filter(g => g.appid !== mergeFrom)
-                .map(g => (
+                .filter((g) => g.appid !== mergeFrom)
+                .map((g) => (
                   <option key={g.appid} value={g.appid}>
                     {g.name}
                   </option>
@@ -542,35 +559,42 @@ export default function App() {
             <button
               onClick={addMerge}
               disabled={mergeFrom === "" || mergeTo === ""}
-              style={{ padding: "6px 10px" }}
-            >
+              style={{ padding: "6px 10px" }}>
               Merge
             </button>
 
             {Object.keys(mergeMap).length > 0 && (
-              <button
-                onClick={clearMerges}
-                style={{ padding: "6px 10px" }}
-              >
+              <button onClick={clearMerges} style={{ padding: "6px 10px" }}>
                 Clear merges
               </button>
             )}
 
             {Object.keys(mergeMap).length > 0 && (
-              <div style={{ width: "100%", marginTop: 6, fontSize: 13, opacity: 0.8 }}>
+              <div
+                style={{
+                  width: "100%",
+                  marginTop: 6,
+                  fontSize: 13,
+                  opacity: 0.8,
+                }}>
                 {Object.entries(mergeMap).map(([fromStr, toNum]) => {
                   const from = Number(fromStr);
-                  const fromName = unmergedGames.find(g => g.appid === from)?.name || fromStr;
-                  const toName = unmergedGames.find(g => g.appid === toNum)?.name || String(toNum);
+                  const fromName =
+                    unmergedGames.find((g) => g.appid === from)?.name ||
+                    fromStr;
+                  const toName =
+                    unmergedGames.find((g) => g.appid === toNum)?.name ||
+                    String(toNum);
                   return (
-                    <div key={from} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <div
+                      key={from}
+                      style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <span>
                         {fromName} → {toName}
                       </span>
                       <button
                         onClick={() => removeMerge(from)}
-                        style={{ padding: "2px 6px", fontSize: 12 }}
-                      >
+                        style={{ padding: "2px 6px", fontSize: 12 }}>
                         X
                       </button>
                     </div>
@@ -592,9 +616,8 @@ export default function App() {
             padding: 10,
             background: "#111820",
             border: "1px solid #233447",
-            borderRadius: 10
-          }}
-        >
+            borderRadius: 10,
+          }}>
           <div style={{ fontWeight: 700 }}>Manually add a game:</div>
 
           <input
@@ -607,7 +630,7 @@ export default function App() {
               borderRadius: 6,
               border: "1px solid #2a475e",
               background: "#0b0f14",
-              color: "white"
+              color: "white",
             }}
           />
 
@@ -621,7 +644,7 @@ export default function App() {
               borderRadius: 6,
               border: "1px solid #2a475e",
               background: "#0b0f14",
-              color: "white"
+              color: "white",
             }}
           />
 
@@ -635,11 +658,17 @@ export default function App() {
             </button>
           )}
 
-          <label style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 10 }}>
+          <label
+            style={{
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              marginLeft: 10,
+            }}>
             <input
               type="checkbox"
               checked={showManualMarkers}
-              onChange={e => setShowManualMarkers(e.target.checked)}
+              onChange={(e) => setShowManualMarkers(e.target.checked)}
             />
             Mark manual games
           </label>
@@ -650,8 +679,7 @@ export default function App() {
               href="https://steamdb.info/apps/"
               target="_blank"
               rel="noreferrer"
-              style={{ color: "#8ab4f8" }}
-            >
+              style={{ color: "#8ab4f8" }}>
               steamdb.info/apps
             </a>
           </div>
@@ -663,27 +691,23 @@ export default function App() {
                 marginTop: 6,
                 fontSize: 13,
                 opacity: 0.85,
-              }}
-            >
+              }}>
               {manualGames.map((m) => (
                 <div
                   key={m.appid}
-                  style={{ display: "flex", gap: 8, alignItems: "center" }}
-                >
+                  style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span>
                     {m.name || `App ${m.appid}`} ({m.appid}) — {m.hours}h
                   </span>
                   <button
                     onClick={() => removeManualGame(m.appid)}
-                    style={{ padding: "2px 6px", fontSize: 12 }}
-                  >
+                    style={{ padding: "2px 6px", fontSize: 12 }}>
                     X
                   </button>
                 </div>
               ))}
             </div>
           )}
-
         </div>
 
         {games.length > 0 && (
@@ -697,9 +721,8 @@ export default function App() {
               padding: 10,
               background: "#111820",
               border: "1px solid #233447",
-              borderRadius: 10
-            }}
-          >
+              borderRadius: 10,
+            }}>
             <label>
               Top N:
               <input
@@ -708,7 +731,7 @@ export default function App() {
                 max={300}
                 step={10}
                 value={topNInput}
-                onChange={e => setTopNInput(Number(e.target.value))}
+                onChange={(e) => setTopNInput(Number(e.target.value))}
                 disabled={showAll}
                 style={{ marginLeft: 8 }}
               />
@@ -720,8 +743,12 @@ export default function App() {
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input
                 type="checkbox"
-                checked={showAll}
-                onChange={e => setShowAll(e.target.checked)}
+                checked={showAllRaw}
+                onChange={(e) => {
+                  setLoading(true);
+                  setLoadingMessage("Processing games...");
+                  setShowAllRaw(e.target.checked);
+                }}
               />
               Show all games
             </label>
@@ -730,28 +757,25 @@ export default function App() {
               Layout:
               <select
                 value={layoutMode}
-                onChange={e => setLayoutMode(e.target.value as any)}
-              >
+                onChange={(e) => setLayoutMode(e.target.value as any)}>
                 <option value="scatter">Blob / Scatter</option>
                 <option value="packed">Packed</option>
               </select>
             </label>
 
             <button
-              onClick={() => setShuffleSeed(s => s + 1)}
+              onClick={() => setShuffleSeed((s) => s + 1)}
               disabled={layoutMode !== "scatter"}
               style={{ padding: "6px 10px" }}
-              title="Shuffle blob layout"
-            >
+              title="Shuffle blob layout">
               Shuffle
             </button>
-
 
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input
                 type="checkbox"
                 checked={showHoursLabels}
-                onChange={e => setShowHoursLabels(e.target.checked)}
+                onChange={(e) => setShowHoursLabels(e.target.checked)}
               />
               Show hours on bubbles
             </label>
@@ -760,7 +784,7 @@ export default function App() {
               <>
                 <select
                   value={selectedHiddenAppid}
-                  onChange={e =>
+                  onChange={(e) =>
                     setSelectedHiddenAppid(
                       e.target.value === "" ? "" : Number(e.target.value)
                     )
@@ -771,11 +795,10 @@ export default function App() {
                     border: "1px solid #2a475e",
                     background: "#0b0f14",
                     color: "white",
-                    minWidth: 220
-                  }}
-                >
+                    minWidth: 220,
+                  }}>
                   <option value="">Hidden games...</option>
-                  {hiddenGamesList.map(g => (
+                  {hiddenGamesList.map((g) => (
                     <option key={g.appid} value={g.appid}>
                       {g.name}
                     </option>
@@ -790,15 +813,11 @@ export default function App() {
                     }
                   }}
                   disabled={selectedHiddenAppid === ""}
-                  style={{ padding: "6px 10px" }}
-                >
+                  style={{ padding: "6px 10px" }}>
                   Unhide
                 </button>
 
-                <button
-                  onClick={clearHidden}
-                  style={{ padding: "6px 10px" }}
-                >
+                <button onClick={clearHidden} style={{ padding: "6px 10px" }}>
                   Clear hidden ({hiddenGamesList.length})
                 </button>
               </>
@@ -807,14 +826,14 @@ export default function App() {
             <input
               placeholder="Search a game..."
               value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
+              onChange={(e) => setSearchTerm(e.target.value)}
               style={{
                 padding: 6,
                 minWidth: 220,
                 borderRadius: 6,
                 border: "1px solid #2a475e",
                 background: "#0b0f14",
-                color: "white"
+                color: "white",
               }}
             />
 
@@ -837,7 +856,7 @@ export default function App() {
         )}
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ paddingBottom: "16px", minHeight: 0 }}>
         {selection.length > 0 && (
           <BubbleChart
             games={selection}
@@ -847,9 +866,14 @@ export default function App() {
             showHoursLabels={showHoursLabels}
             showManualMarkers={showManualMarkers}
             onToggleHide={toggleHide}
+            onProcessingChange={(isProcessing) => {
+              setLoading(isProcessing);
+              setLoadingMessage("Processing chart...");
+            }}
           />
         )}
       </div>
+      <Loader visible={loading} message={loadingMessage} />
     </div>
   );
 }
