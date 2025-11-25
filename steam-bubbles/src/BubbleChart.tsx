@@ -18,6 +18,7 @@ type Props = {
   showHoursLabels: boolean;
   showManualMarkers?: boolean; // NEW
   onToggleHide: (appid: number) => void;
+  onProcessingChange?: (isProcessing: boolean, message: string) => void;
 };
 
 type SizedGame = GameViz & {
@@ -65,6 +66,7 @@ export default function BubbleChart({
   layoutMode,
   shuffleSeed,
   showHoursLabels,
+  onProcessingChange,
   showManualMarkers = false,
   onToggleHide,
 }: Props) {
@@ -84,7 +86,7 @@ export default function BubbleChart({
   const scatterPosRef = useRef<Map<number, { x: number; y: number }>>(
     new Map()
   );
-  
+
   const scatterMaxRRef = useRef<number | null>(null);
 
   // pan & zoom
@@ -167,10 +169,7 @@ export default function BubbleChart({
     // for whatever reason .15 fixed collisions
     const maxR = Math.min(width, height) * 0.15;
 
-    const rScale = d3
-      .scaleSqrt()
-      .domain([0, maxValue])
-      .range([6, maxR]);
+    const rScale = d3.scaleSqrt().domain([0, maxValue]).range([6, maxR]);
 
     return games.map((g) => {
       const h = Number.isFinite(g.hours) && g.hours >= 0 ? g.hours : 0;
@@ -209,161 +208,172 @@ export default function BubbleChart({
   }, [layoutMode, sized, width, height, outerPad]);
 
   // scatter / blob
-  const scatterLayout = useMemo(() => {
-    if (layoutMode !== "scatter") return [] as LeafNode[];
+  const [scatterLayout, setScatterLayout] = useState<LeafNode[]>([]);
 
-    const prevMaxR = scatterMaxRRef.current;
-    const maxRNow = d3.max(sized.map((s) => s.r)) ?? 1;
-
-    const significantRadiusChange =
-      prevMaxR != null && Math.abs(maxRNow - prevMaxR) / prevMaxR > 0.2;
-
-    let prev = scatterPosRef.current;
-    if (significantRadiusChange) prev = new Map(); 
-
-    const n = sized.length;
-    const blobRadius = Math.min(width, height) * 0.32;
-    const goldenAngle = Math.PI * (3 - Math.sqrt(5)); 
-
-    const nodes: ScatterNode[] = sized.map((d, i) => {
-      const old = prev.get(d.appid);
-      const rng = rngForApp(d.appid, shuffleSeed);
-
-      // bias targets
-      const t = n <= 1 ? 0 : i / (n - 1);
-      const angle = i * goldenAngle;
-      const spiralR = blobRadius * Math.sqrt(t);
-
-      const tx =
-        cx +
-        Math.cos(angle) * spiralR +
-        (rng() - 0.5) * width * 0.06;
-      const ty =
-        cy +
-        Math.sin(angle) * spiralR +
-        (rng() - 0.5) * height * 0.06;
-
-      // start positions
-      const startX =
-        old?.x ?? tx + (rng() - 0.5) * width * 0.18 + (rng() - 0.5) * 30;
-      const startY =
-        old?.y ?? ty + (rng() - 0.5) * height * 0.18 + (rng() - 0.5) * 30;
-
-      return { ...d, x: startX, y: startY, tx, ty };
-    });
-
-    const pad = 0.9;
-
-    const runTicks = (sim: d3.Simulation<any, any>, ticks: number) => {
-      for (let i = 0; i < ticks; i++) sim.tick();
-    };
-
-    // scale tick counts by number of bubbles
-    // for freezes hopefuuly
-    const t1 = clamp(180 + n * 1.5, 220, 520);
-    const t2 = clamp(240 + n * 2.0, 320, 720);
-
-    // pull to center and collide
-    const sim1 = d3
-      .forceSimulation(nodes as any)
-      .alpha(1)
-      .alphaDecay(0.05)
-      .velocityDecay(0.32)
-      .force("x", d3.forceX((d: any) => d.tx).strength(0.06))
-      .force("y", d3.forceY((d: any) => d.ty).strength(0.06))
-      .force(
-        "collide",
-        d3.forceCollide((d: any) => d.r + pad).iterations(9)
-      )
-      .stop();
-
-    runTicks(sim1, t1);
-
-    // stronger collide
-    const sim2 = d3
-      .forceSimulation(nodes as any)
-      .alpha(0.9)
-      .alphaDecay(0.03)
-      .velocityDecay(0.45)
-      .force(
-        "collide",
-        d3
-          .forceCollide((d: any) => d.r + pad)
-          .strength(1)
-          .iterations(14)
-      )
-      .stop();
-
-    runTicks(sim2, t2);
-
-    // clamp to bounds
-    nodes.forEach((node) => {
-      node.x = Math.max(
-        node.r + outerPad,
-        Math.min(width - node.r - outerPad, node.x)
-      );
-      node.y = Math.max(
-        node.r + outerPad,
-        Math.min(height - node.r - outerPad, node.y)
-      );
-    });
-
-    // tiny cleanup only for smaller N 
-    if (n <= 140) {
-      let overlaps = 0;
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          const a = nodes[i], b = nodes[j];
-          const dx = a.x - b.x;
-          const dy = a.y - b.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist < a.r + b.r + pad - 0.5) overlaps++;
-          if (overlaps > 6) break;
-        }
-        if (overlaps > 6) break;
+  useEffect(() => {
+    if (layoutMode !== "scatter") {
+      setScatterLayout([]);
+      onProcessingChange?.(false, "");
+    } else {
+      async function compute() {
+        onProcessingChange?.(true, "Calculating bubble positions...");
+        const nodes = await computeNodesAsync();
+        setScatterLayout(nodes);
+        onProcessingChange?.(false, "");
       }
-
-      if (overlaps > 0) {
-        const sim3 = d3
-          .forceSimulation(nodes as any)
-          .alpha(0.6)
-          .alphaDecay(0.06)
-          .velocityDecay(0.5)
-          .force("centerX", d3.forceX(cx).strength(0.02))
-          .force("centerY", d3.forceY(cy).strength(0.02))
-          .force(
-            "collide",
-            d3
-              .forceCollide((d: any) => d.r + pad)
-              .strength(1)
-              .iterations(18)
-          )
-          .stop();
-
-        runTicks(sim3, 260);
-      }
+      compute();
     }
-
-    const next = new Map<number, { x: number; y: number }>();
-    nodes.forEach((node) => next.set(node.appid, { x: node.x, y: node.y }));
-    scatterPosRef.current = next;
-    scatterMaxRRef.current = maxRNow;
-
-    return nodes.map((node) => ({
-      data: node,
-      x: node.x,
-      y: node.y,
-      r: node.r,
-    }));
   }, [layoutMode, sized, width, height, outerPad, shuffleSeed, cx, cy]);
 
-  const layoutLeaves =
-    layoutMode === "packed" ? packedLayout : scatterLayout;
+  function computeNodesAsync(/* params */): Promise<LeafNode[]> {
+    return new Promise((resolve) => {
+      const prevMaxR = scatterMaxRRef.current;
+      const maxRNow = d3.max(sized.map((s) => s.r)) ?? 1;
+
+      const significantRadiusChange =
+        prevMaxR != null && Math.abs(maxRNow - prevMaxR) / prevMaxR > 0.2;
+
+      let prev = scatterPosRef.current;
+      if (significantRadiusChange) prev = new Map();
+
+      const n = sized.length;
+      const blobRadius = Math.min(width, height) * 0.32;
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+      const nodes: ScatterNode[] = sized.map((d, i) => {
+        const old = prev.get(d.appid);
+        const rng = rngForApp(d.appid, shuffleSeed);
+
+        // bias targets
+        const t = n <= 1 ? 0 : i / (n - 1);
+        const angle = i * goldenAngle;
+        const spiralR = blobRadius * Math.sqrt(t);
+
+        const tx =
+          cx + Math.cos(angle) * spiralR + (rng() - 0.5) * width * 0.06;
+        const ty =
+          cy + Math.sin(angle) * spiralR + (rng() - 0.5) * height * 0.06;
+
+        // start positions
+        const startX =
+          old?.x ?? tx + (rng() - 0.5) * width * 0.18 + (rng() - 0.5) * 30;
+        const startY =
+          old?.y ?? ty + (rng() - 0.5) * height * 0.18 + (rng() - 0.5) * 30;
+
+        return { ...d, x: startX, y: startY, tx, ty };
+      });
+
+      const pad = 0.9;
+
+      const runTicks = (sim: d3.Simulation<any, any>, ticks: number) => {
+        for (let i = 0; i < ticks; i++) sim.tick();
+      };
+
+      // scale tick counts by number of bubbles
+      // for freezes hopefuuly
+      const t1 = clamp(180 + n * 1.5, 220, 520);
+      const t2 = clamp(240 + n * 2.0, 320, 720);
+
+      // pull to center and collide
+      const sim1 = d3
+        .forceSimulation(nodes as any)
+        .alpha(1)
+        .alphaDecay(0.05)
+        .velocityDecay(0.32)
+        .force("x", d3.forceX((d: any) => d.tx).strength(0.06))
+        .force("y", d3.forceY((d: any) => d.ty).strength(0.06))
+        .force("collide", d3.forceCollide((d: any) => d.r + pad).iterations(9))
+        .stop();
+
+      runTicks(sim1, t1);
+
+      // stronger collide
+      const sim2 = d3
+        .forceSimulation(nodes as any)
+        .alpha(0.9)
+        .alphaDecay(0.03)
+        .velocityDecay(0.45)
+        .force(
+          "collide",
+          d3
+            .forceCollide((d: any) => d.r + pad)
+            .strength(1)
+            .iterations(14)
+        )
+        .stop();
+
+      runTicks(sim2, t2);
+
+      // clamp to bounds
+      nodes.forEach((node) => {
+        node.x = Math.max(
+          node.r + outerPad,
+          Math.min(width - node.r - outerPad, node.x)
+        );
+        node.y = Math.max(
+          node.r + outerPad,
+          Math.min(height - node.r - outerPad, node.y)
+        );
+      });
+
+      // tiny cleanup only for smaller N
+      if (n <= 140) {
+        let overlaps = 0;
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const a = nodes[i],
+              b = nodes[j];
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < a.r + b.r + pad - 0.5) overlaps++;
+            if (overlaps > 6) break;
+          }
+          if (overlaps > 6) break;
+        }
+
+        if (overlaps > 0) {
+          const sim3 = d3
+            .forceSimulation(nodes as any)
+            .alpha(0.6)
+            .alphaDecay(0.06)
+            .velocityDecay(0.5)
+            .force("centerX", d3.forceX(cx).strength(0.02))
+            .force("centerY", d3.forceY(cy).strength(0.02))
+            .force(
+              "collide",
+              d3
+                .forceCollide((d: any) => d.r + pad)
+                .strength(1)
+                .iterations(18)
+            )
+            .stop();
+
+          runTicks(sim3, 260);
+        }
+      }
+
+      const next = new Map<number, { x: number; y: number }>();
+      nodes.forEach((node) => next.set(node.appid, { x: node.x, y: node.y }));
+      scatterPosRef.current = next;
+      scatterMaxRRef.current = maxRNow;
+
+      resolve(
+        nodes.map((node) => ({
+          data: node,
+          x: node.x,
+          y: node.y,
+          r: node.r,
+        }))
+      );
+    });
+  }
+  const layoutLeaves = layoutMode === "packed" ? packedLayout : scatterLayout;
 
   //smooth transitions hopefully
-  const prevPosRef = useRef<
-    Map<number, { x: number; y: number; r: number }>
-  >(new Map());
+  const prevPosRef = useRef<Map<number, { x: number; y: number; r: number }>>(
+    new Map()
+  );
   const [displayLeaves, setDisplayLeaves] = useState<LeafNode[]>([]);
 
   useEffect(() => {
@@ -406,8 +416,7 @@ export default function BubbleChart({
           overflow: "visible",
           touchAction: "none",
           cursor: dragRef.current.dragging ? "grabbing" : "grab",
-        }}
-      >
+        }}>
         <g transform={baseTransform}>
           <g transform={userTransform}>
             {displayLeaves.map((l, i) => {
@@ -438,8 +447,7 @@ export default function BubbleChart({
                     transition: "transform 600ms ease, opacity 250ms ease",
                     transformBox: "fill-box",
                     transformOrigin: "center",
-                  }}
-                >
+                  }}>
                   <defs>
                     <clipPath id={`clip-${layoutMode}-${i}`}>
                       <circle r={l.r} />
@@ -473,8 +481,7 @@ export default function BubbleChart({
                       stroke="black"
                       strokeWidth={2}
                       paintOrder="stroke"
-                      style={{ pointerEvents: "none", userSelect: "none" }}
-                    >
+                      style={{ pointerEvents: "none", userSelect: "none" }}>
                       {g.hours.toFixed(1)}h
                     </text>
                   )}
@@ -510,8 +517,7 @@ export default function BubbleChart({
             borderRadius: 8,
             width: 260,
             color: "white",
-          }}
-        >
+          }}>
           <div style={{ fontWeight: 700 }}>{hovered.name}</div>
           <div style={{ opacity: 0.85, marginTop: 4 }}>
             {hovered.hours.toFixed(1)} hours played
@@ -527,8 +533,7 @@ export default function BubbleChart({
               border: "1px solid #2a475e",
               borderRadius: 6,
               cursor: "pointer",
-            }}
-          >
+            }}>
             Hide this game
           </button>
 

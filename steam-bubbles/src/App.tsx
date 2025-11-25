@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import BubbleChart from "./BubbleChart";
 import type { GameViz } from "./BubbleChart";
+import Loader from "./Loader";
+import { useDebounce } from "@uidotdev/usehooks";
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:5174";
 
@@ -38,8 +40,11 @@ export default function App() {
   const [games, setGames] = useState<GameViz[]>([]);
   const [error, setError] = useState("");
 
+  const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("");
+
   const [topNInput, setTopNInput] = useState<number>(100);
-  const [topN, setTopN] = useState<number>(100);
+  const topN = useDebounce(topNInput, 500);
 
   const [showAll, setShowAll] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState<string>("");
@@ -233,11 +238,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    const id = setTimeout(() => setTopN(topNInput), 120);
-    return () => clearTimeout(id);
-  }, [topNInput]);
-
-  useEffect(() => {
     fetch(`${BACKEND}/api/me`, { credentials: "include" })
       .then((r) => r.json())
       .then(setMe)
@@ -263,6 +263,8 @@ export default function App() {
   }
 
   async function loadGamesById() {
+    setLoading(true);
+    setLoadingMessage("Loading games...");
     const normalized = normalizeSteamInput(steamIdInput);
     if (!normalized) return;
 
@@ -304,70 +306,78 @@ export default function App() {
 
   useEffect(() => {
     if (!rawGames.length && manualGames.length === 0) return;
-
     // owned games
-    const owned: GameViz[] = rawGames
-      .filter((g) => g && g.appid && g.name)
-      .map((g) => {
-        const minutes = Number(g.playtime_forever ?? 0);
-        const hoursRaw = Number.isFinite(minutes) ? minutes / 60 : 0;
-        const hours = Number.isFinite(hoursRaw) && hoursRaw >= 0 ? hoursRaw : 0;
 
-        return {
-          appid: g.appid,
-          name: g.name,
-          hours,
-          img: `https://cdn.akamai.steamstatic.com/steam/apps/${g.appid}/header.jpg`,
-          storeUrl: `https://store.steampowered.com/app/${g.appid}/`,
-          manual: false,
-        };
-      });
+    setLoading(true);
+    setLoadingMessage("Processing games...");
 
-    // manual games (can overlap appids, merge later)
-    const manualList: GameViz[] = manualGames.map((m) => ({
-      appid: m.appid,
-      name: m.name || `App ${m.appid}`,
-      hours: m.hours,
-      img:
-        m.img ||
-        `https://cdn.akamai.steamstatic.com/steam/apps/${m.appid}/header.jpg`,
-      storeUrl: `https://store.steampowered.com/app/${m.appid}/`,
-      manual: true,
-    }));
+    setTimeout(() => {
+      const owned: GameViz[] = rawGames
+        .filter((g) => g && g.appid && g.name)
+        .map((g) => {
+          const minutes = Number(g.playtime_forever ?? 0);
+          const hoursRaw = Number.isFinite(minutes) ? minutes / 60 : 0;
+          const hours =
+            Number.isFinite(hoursRaw) && hoursRaw >= 0 ? hoursRaw : 0;
 
-    const base = [...owned, ...manualList];
-    setUnmergedGames(base);
-
-    const metaLookup = new Map<number, GameViz>();
-    for (const g of base) {
-      if (!metaLookup.has(g.appid)) metaLookup.set(g.appid, g);
-      else {
-        const cur = metaLookup.get(g.appid)!;
-        if (cur.manual && !g.manual) metaLookup.set(g.appid, g);
-      }
-    }
-
-    // apply merges & also combine duplicate appids
-    const merged = new Map<number, GameViz>();
-
-    for (const g of base) {
-      const root = findMergeRoot(g.appid, mergeMap);
-      const meta = metaLookup.get(root) || g;
-
-      const existing = merged.get(root);
-      if (existing) {
-        existing.hours += g.hours;
-        existing.manual = existing.manual || g.manual;
-      } else {
-        merged.set(root, {
-          ...meta,
-          hours: g.hours,
-          manual: g.manual,
+          return {
+            appid: g.appid,
+            name: g.name,
+            hours,
+            img: `https://cdn.akamai.steamstatic.com/steam/apps/${g.appid}/header.jpg`,
+            storeUrl: `https://store.steampowered.com/app/${g.appid}/`,
+            manual: false,
+          };
         });
-      }
-    }
 
-    setGames([...merged.values()]);
+      // manual games (can overlap appids, merge later)
+      const manualList: GameViz[] = manualGames.map((m) => ({
+        appid: m.appid,
+        name: m.name || `App ${m.appid}`,
+        hours: m.hours,
+        img:
+          m.img ||
+          `https://cdn.akamai.steamstatic.com/steam/apps/${m.appid}/header.jpg`,
+        storeUrl: `https://store.steampowered.com/app/${m.appid}/`,
+        manual: true,
+      }));
+
+      const base = [...owned, ...manualList];
+      setUnmergedGames(base);
+
+      const metaLookup = new Map<number, GameViz>();
+      for (const g of base) {
+        if (!metaLookup.has(g.appid)) metaLookup.set(g.appid, g);
+        else {
+          const cur = metaLookup.get(g.appid)!;
+          if (cur.manual && !g.manual) metaLookup.set(g.appid, g);
+        }
+      }
+
+      // apply merges & also combine duplicate appids
+      const merged = new Map<number, GameViz>();
+
+      for (const g of base) {
+        const root = findMergeRoot(g.appid, mergeMap);
+        const meta = metaLookup.get(root) || g;
+
+        const existing = merged.get(root);
+        if (existing) {
+          existing.hours += g.hours;
+          existing.manual = existing.manual || g.manual;
+        } else {
+          merged.set(root, {
+            ...meta,
+            hours: g.hours,
+            manual: g.manual,
+          });
+        }
+      }
+
+      setLoading(false);
+      setLoadingMessage("");
+      setGames([...merged.values()]);
+    }, 1000);
   }, [rawGames, manualGames, mergeMap]);
 
   const hiddenGamesList = useMemo(
@@ -382,6 +392,8 @@ export default function App() {
 
   // selection stays "top by hours" like now
   const selection = useMemo(() => {
+    setLoading(true);
+    setLoadingMessage("Processing games...");
     const sorted = [...visibleGames].sort((a, b) => b.hours - a.hours);
     if (showAll) return sorted;
     return sorted.slice(0, Math.max(5, topN));
@@ -846,9 +858,14 @@ export default function App() {
             showHoursLabels={showHoursLabels}
             showManualMarkers={showManualMarkers}
             onToggleHide={toggleHide}
+            onProcessingChange={(isProcessing, message) => {
+              setLoading(isProcessing);
+              setLoadingMessage(message);
+            }}
           />
         )}
       </div>
+      <Loader visible={loading} message={loadingMessage} />
     </div>
   );
 }
