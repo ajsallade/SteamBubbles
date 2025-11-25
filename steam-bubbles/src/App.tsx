@@ -46,7 +46,8 @@ export default function App() {
   const [topNInput, setTopNInput] = useState<number>(100);
   const topN = useDebounce(topNInput, 500);
 
-  const [showAll, setShowAll] = useState<boolean>(false);
+  const [showAllRaw, setShowAllRaw] = useState<boolean>(false);
+  const showAll = useDebounce(showAllRaw, 100);
   const [searchTerm, setSearchTerm] = useState<string>("");
 
   const [layoutMode, setLayoutMode] = useState<"packed" | "scatter">("scatter");
@@ -264,6 +265,7 @@ export default function App() {
 
   async function loadGamesById() {
     setLoading(true);
+    console.log("Loading games by ID...");
     setLoadingMessage("Loading games...");
     const normalized = normalizeSteamInput(steamIdInput);
     if (!normalized) return;
@@ -309,6 +311,7 @@ export default function App() {
     // owned games
 
     setLoading(true);
+    console.log("Processing games... (useEffect)");
     setLoadingMessage("Processing games...");
 
     setTimeout(() => {
@@ -392,6 +395,7 @@ export default function App() {
 
   // selection stays "top by hours" like now
   const selection = useMemo(() => {
+    if (visibleGames.length === 0) return [];
     setLoading(true);
     setLoadingMessage("Processing games...");
     const sorted = [...visibleGames].sort((a, b) => b.hours - a.hours);
@@ -739,8 +743,12 @@ export default function App() {
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input
                 type="checkbox"
-                checked={showAll}
-                onChange={(e) => setShowAll(e.target.checked)}
+                checked={showAllRaw}
+                onChange={(e) => {
+                  setLoading(true);
+                  setLoadingMessage("Processing games...");
+                  setShowAllRaw(e.target.checked);
+                }}
               />
               Show all games
             </label>
@@ -848,7 +856,7 @@ export default function App() {
         )}
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ paddingBottom: "16px", minHeight: 0 }}>
         {selection.length > 0 && (
           <BubbleChart
             games={selection}
@@ -858,9 +866,9 @@ export default function App() {
             showHoursLabels={showHoursLabels}
             showManualMarkers={showManualMarkers}
             onToggleHide={toggleHide}
-            onProcessingChange={(isProcessing, message) => {
+            onProcessingChange={(isProcessing) => {
               setLoading(isProcessing);
-              setLoadingMessage(message);
+              setLoadingMessage("Processing chart...");
             }}
           />
         )}

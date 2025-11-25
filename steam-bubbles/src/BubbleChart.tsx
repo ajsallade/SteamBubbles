@@ -18,7 +18,7 @@ type Props = {
   showHoursLabels: boolean;
   showManualMarkers?: boolean; // NEW
   onToggleHide: (appid: number) => void;
-  onProcessingChange?: (isProcessing: boolean, message: string) => void;
+  onProcessingChange?: (isProcessing: boolean) => void;
 };
 
 type SizedGame = GameViz & {
@@ -213,15 +213,19 @@ export default function BubbleChart({
   useEffect(() => {
     if (layoutMode !== "scatter") {
       setScatterLayout([]);
-      onProcessingChange?.(false, "");
+      onProcessingChange?.(false);
     } else {
+      onProcessingChange?.(true);
+
       async function compute() {
-        onProcessingChange?.(true, "Calculating bubble positions...");
         const nodes = await computeNodesAsync();
         setScatterLayout(nodes);
-        onProcessingChange?.(false, "");
+        onProcessingChange?.(false);
       }
+      setTimeout(() => {
       compute();
+      }, 10);
+
     }
   }, [layoutMode, sized, width, height, outerPad, shuffleSeed, cx, cy]);
 
